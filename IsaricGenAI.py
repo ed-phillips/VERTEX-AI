@@ -144,15 +144,4 @@ class AnalysisGenerator:
         except Exception as e:
             print(f"Error generating analysis: {str(e)}")
             return f"Error generating analysis: {str(e)}"
-        
 
-# # Example usage
-# if __name__ == "__main__":
-#     try:
-#         test_table = pd.read_csv("data/desc_table.csv")
-#         ag = AnalysisGenerator()
-#         insights = ag.generate_analysis(df=test_table)
-#         print("\nGenerated Insights:")
-#         print(insights)
-#     except Exception as e:
-#         print(f"Error in main execution: {str(e)}")

@@ -228,45 +228,11 @@ about_str = '\n'.join(
     ['Information about each visual in the insight panel:'] + about_list)
 
 # init ai analyser
-analysis_generator = iga.AnalysisGenerator()
+analysis_generator = iga.AnalysisGenerator(model_dir="./models")
 
 ############################################
 # Modal creation
 ############################################
-def generate_analysis_text(df):
-    """
-    Generate analysis text based on the filtered dataframe
-    Placeholder to be replaced with AI generated insight
-    """
-    total_patients = len(df)
-    age_mean = df['age'].mean()
-    age_std = df['age'].std()
-    gender_dist = df['slider_sex'].value_counts(normalize=True) * 100
-    outcome_dist = df['outcome'].value_counts(normalize=True) * 100
-    
-    analysis_text = f"""
-    Population Overview:
-    • Total patients: {total_patients}
-    • Age distribution: {age_mean:.1f} ± {age_std:.1f} years
-    
-    Gender Distribution:
-    {', '.join([f'• {gender}: {pct:.1f}%' for gender, pct in gender_dist.items()])}
-    
-    Outcomes:
-    {', '.join([f'• {outcome}: {pct:.1f}%' for outcome, pct in outcome_dist.items()])}
-    
-    Key Findings:
-    • {gender_dist.index[0]} represents the majority at {gender_dist.iloc[0]:.1f}% of the population
-    • The most common outcome is {outcome_dist.index[0]} ({outcome_dist.iloc[0]:.1f}%)
-    """
-    return analysis_text
-
-def generate_ai_text(df):
-    """Sample function to populate panel with AI insight"""
-    ai_insights = iga.generate_insights(descriptive_table=str(df.to_markdown()))
-    return ai_insights
-
-
 
 def generate_html_text(text):
     text_list = text.strip('\n').split('\n')
@@ -283,6 +249,23 @@ def generate_html_text(text):
         div_list.append(html.Br())
     div = html.Div(div_list[:-1])
     return div
+
+def generate_html_from_md(markdown_text):
+    """
+    Converts markdown text to an HTML Div with rendered markdown using dcc.Markdown.
+    """
+    return dash.dcc.Markdown(
+        markdown_text,
+        style={
+            'whiteSpace': 'pre-wrap',
+            'fontFamily': 'var(--bs-font-monospace)',
+            'padding': '1rem',
+            'backgroundColor': 'var(--bs-gray-100)',
+            'borderRadius': 'var(--bs-border-radius)',
+            'marginTop': '1rem',
+            'minHeight': '150px'
+        }
+    )
 
 
 def create_modal():
@@ -329,19 +312,38 @@ def create_modal():
                                     inline=True,
                                     className='mb-3'
                                 ),
-                            ]),
+                            ], width=9),
+                            dbc.Col([
+                                dbc.Button(
+                                    "Generate Insights",
+                                    id=f'submit-button_{suffix}',
+                                    color="primary",
+                                    className="mb-3",
+                                    n_clicks=0
+                                ),
+                            ], width=3, className="text-end"),
                         ]),
-                        html.Div(
-                            id=f'analysis-text_{suffix}',
-                            style={
-                                'whiteSpace': 'pre-wrap',
-                                'fontFamily': 'monospace',
-                                'padding': '1rem',
-                                'backgroundColor': '#f8f9fa',
-                                'borderRadius': '0.25rem',
-                                'marginTop': '1rem'
-                            }
-                        )
+                        # Simplified loading container
+                        dbc.Row([
+                            dbc.Col([
+                                dash.dcc.Loading(
+                                    id=f'loading-container_{suffix}',
+                                    type="default",
+                                    children=html.Div(
+                                        id=f'analysis-text_{suffix}',
+                                        style={
+                                            'whiteSpace': 'pre-wrap',
+                                            'fontFamily': 'var(--bs-font-monospace)',
+                                            'padding': '1rem',
+                                            'backgroundColor': 'var(--bs-gray-100)',
+                                            'borderRadius': 'var(--bs-border-radius)',
+                                            'marginTop': '1rem',
+                                            'minHeight': '150px'
+                                        }
+                                    )
+                                )
+                            ])
+                        ])
                     ]
                 )
             ])
@@ -469,34 +471,70 @@ def register_callbacks(app, suffix):
             visuals = [visual for visual, _, _ in create_visuals(filtered_df)]
         return visuals
     
-    # ai analysis callback to update when filters change
-    # TODO: offer user option to generate new insights
     @app.callback(
-        Output(f'analysis-text_{suffix}', 'children'),
-        [Input(f'submit-button_{suffix}', 'n_clicks'),
-         Input(f'analysis-type_{suffix}', 'value')],
-        [State(f'gender-checkboxes_{suffix}', 'value'),
-         State(f'age-slider_{suffix}', 'value'),
-         State(f'outcome-checkboxes_{suffix}', 'value'),
-         State(f'country-checkboxes_{suffix}', 'value')]
+        [
+            Output(f'analysis-text_{suffix}', 'children'),
+            Output(f'loading-container_{suffix}', 'style')
+        ],
+        [
+            Input(f'submit-button_{suffix}', 'n_clicks')
+        ],
+        [
+            State(f'analysis-type_{suffix}', 'value'),
+            State(f'gender-checkboxes_{suffix}', 'value'),
+            State(f'age-slider_{suffix}', 'value'),
+            State(f'outcome-checkboxes_{suffix}', 'value'),
+            State(f'country-checkboxes_{suffix}', 'value')
+        ],
+        prevent_initial_call=True
     )
     def update_analysis(click, analysis_type, genders, age_range, outcomes, countries):
-        filtered_df = df_map[(
-            (df_map['slider_sex'].isin(genders)) &
-            ((df_map['age'] >= age_range[0]) | df_map['age'].isna()) &
-            ((df_map['age'] <= age_range[1]) | df_map['age'].isna()) &
-            (df_map['outcome'].isin(outcomes)) &
-            (df_map['country_iso'].isin(countries)))]
+        """
+        Generate AI insights and manage loading states
+        """
+        # Initial state - no button click yet
+        if click is None:
+            return "", {'display': 'none'}
 
-        if filtered_df.empty:
-            return "No data available for the selected filters."
-        
-        desc_table = get_desc_table(filtered_df)
-        # Generate insights using the AI model
-        return analysis_generator.generate_analysis(
-            df=desc_table,
-            analysis_type=analysis_type
-        )
+        try:
+            # Data filtering
+            filtered_df = df_map[
+                (df_map['slider_sex'].isin(genders)) &
+                ((df_map['age'] >= age_range[0]) | df_map['age'].isna()) &
+                ((df_map['age'] <= age_range[1]) | df_map['age'].isna()) &
+                (df_map['outcome'].isin(outcomes)) &
+                (df_map['country_iso'].isin(countries))
+            ]
+
+            if filtered_df.empty:
+                return "No data available for the selected filters.", {'display': 'none'}
+
+            if len(filtered_df) < 10:
+                return "Insufficient data for meaningful analysis. Please broaden your filters.", {'display': 'none'}
+
+            # Generate insights
+            desc_table = get_desc_table(filtered_df)
+            insights = analysis_generator.generate_analysis(
+                df=desc_table,
+                analysis_type=analysis_type
+            )
+
+            if isinstance(insights, str) and insights.strip():
+                formatted_insights = generate_html_text(f"""
+### AI Analysis ({analysis_type.title()} Focus)
+
+{insights}
+
+*Note: These insights are AI-generated and should be verified against the data.*
+""")
+                return formatted_insights, {'display': 'none'}
+            else:
+                return "Error generating analysis. Please try again.", {'display': 'none'}
+
+        except Exception as e:
+            print(f"Error in analysis generation: {str(e)}")
+            return "Error generating analysis. Please try again.", {'display': 'none'}
+
 
     # End of callbacks
     return

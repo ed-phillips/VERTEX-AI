@@ -7,6 +7,7 @@ import pandas as pd
 import pycountry
 import IsaricDraw as idw
 import IsaricAnalytics as ia
+import IsaricGenAI as iga
 import getREDCapData as getRC
 import redcap_config as rc_config
 
@@ -172,6 +173,30 @@ bins = [float(x.split('-')[0].strip()) for x in age_groups] + [np.inf]
 df_map['age_group'] = pd.cut(
     df_map['age'], bins=bins, labels=age_groups, right=False)
 
+# descriptive table code
+def get_desc_table(df_map):
+    """Helper function to get descriptive table for AI use later"""
+    dd = getRC.getDataDictionary(redcap_url, redcap_api_key)
+    # variable_dict is a dictionary of lists according to variable type, which
+    # are: 'binary', 'date', 'number', 'freeText', 'units', 'categorical'
+    full_variable_dict = getRC.getVariableType(dd)    
+
+    # Demographics and comorbidities descriptive table
+    inclu_columns = ia.get_variables_from_sections(
+        df_map.columns, ['demog', 'comor'])
+    df_table = ia.from_dummies(df_map[inclu_columns], column='demog_sex')
+    table = ia.descriptive_table(
+        df_table, column='demog_sex', full_variable_dict=full_variable_dict)
+    table = ia.reorder_descriptive_table(
+        table, dictionary=dd,
+        section_reorder=['demog', 'comor'])
+    table, table_key = ia.reformat_descriptive_table(
+        table, dictionary=dd,
+        column_reorder=['Female', 'Male', 'Other / Unknown'])
+    table = ia.add_totals(table, df_table, column='demog_sex')
+    return table
+
+
 all_countries = pycountry.countries
 countries = [
     {'label': country.name, 'value': country.alpha_3}
@@ -202,10 +227,12 @@ about_list = [
 about_str = '\n'.join(
     ['Information about each visual in the insight panel:'] + about_list)
 
+# init ai analyser
+analysis_generator = iga.AnalysisGenerator(model_dir="./models")
+
 ############################################
 # Modal creation
 ############################################
-
 
 def generate_html_text(text):
     text_list = text.strip('\n').split('\n')
@@ -222,6 +249,23 @@ def generate_html_text(text):
         div_list.append(html.Br())
     div = html.Div(div_list[:-1])
     return div
+
+def generate_html_from_md(markdown_text):
+    """
+    Converts markdown text to an HTML Div with rendered markdown using dcc.Markdown.
+    """
+    return dash.dcc.Markdown(
+        markdown_text,
+        style={
+            'whiteSpace': 'pre-wrap',
+            'fontFamily': 'var(--bs-font-monospace)',
+            'padding': '1rem',
+            'backgroundColor': 'var(--bs-gray-100)',
+            'borderRadius': 'var(--bs-border-radius)',
+            'marginTop': '1rem',
+            'minHeight': '150px'
+        }
+    )
 
 
 def create_modal():
@@ -248,6 +292,58 @@ def create_modal():
                                 dbc.Col(visual, id='col-'+visual.id)
                                 ]), label=label)
                             for visual, label, _ in visuals])
+                    ]
+                ),
+                # New Analysis AccordionItem
+                dbc.AccordionItem(
+                    title='AI Analysis',
+                    children=[
+                        dbc.Row([
+                            dbc.Col([
+                                dbc.RadioItems(
+                                    id=f'analysis-type_{suffix}',
+                                    options=[
+                                        {'label': 'General Overview', 'value': 'general'},
+                                        {'label': 'Demographics Focus', 'value': 'demographics'},
+                                        {'label': 'Outcomes Analysis', 'value': 'outcomes'},
+                                        {'label': 'Trend Analysis', 'value': 'trends'}
+                                    ],
+                                    value='general',
+                                    inline=True,
+                                    className='mb-3'
+                                ),
+                            ], width=9),
+                            dbc.Col([
+                                dbc.Button(
+                                    "Generate Insights",
+                                    id=f'submit-button_{suffix}',
+                                    color="primary",
+                                    className="mb-3",
+                                    n_clicks=0
+                                ),
+                            ], width=3, className="text-end"),
+                        ]),
+                        # Simplified loading container
+                        dbc.Row([
+                            dbc.Col([
+                                dash.dcc.Loading(
+                                    id=f'loading-container_{suffix}',
+                                    type="default",
+                                    children=html.Div(
+                                        id=f'analysis-text_{suffix}',
+                                        style={
+                                            'whiteSpace': 'pre-wrap',
+                                            'fontFamily': 'var(--bs-font-monospace)',
+                                            'padding': '1rem',
+                                            'backgroundColor': 'var(--bs-gray-100)',
+                                            'borderRadius': 'var(--bs-border-radius)',
+                                            'marginTop': '1rem',
+                                            'minHeight': '150px'
+                                        }
+                                    )
+                                )
+                            ])
+                        ])
                     ]
                 )
             ])
@@ -374,6 +470,71 @@ def register_callbacks(app, suffix):
         else:
             visuals = [visual for visual, _, _ in create_visuals(filtered_df)]
         return visuals
+    
+    @app.callback(
+        [
+            Output(f'analysis-text_{suffix}', 'children'),
+            Output(f'loading-container_{suffix}', 'style')
+        ],
+        [
+            Input(f'submit-button_{suffix}', 'n_clicks')
+        ],
+        [
+            State(f'analysis-type_{suffix}', 'value'),
+            State(f'gender-checkboxes_{suffix}', 'value'),
+            State(f'age-slider_{suffix}', 'value'),
+            State(f'outcome-checkboxes_{suffix}', 'value'),
+            State(f'country-checkboxes_{suffix}', 'value')
+        ],
+        prevent_initial_call=True
+    )
+    def update_analysis(click, analysis_type, genders, age_range, outcomes, countries):
+        """
+        Generate AI insights and manage loading states
+        """
+        # Initial state - no button click yet
+        if click is None:
+            return "", {'display': 'none'}
+
+        try:
+            # Data filtering
+            filtered_df = df_map[
+                (df_map['slider_sex'].isin(genders)) &
+                ((df_map['age'] >= age_range[0]) | df_map['age'].isna()) &
+                ((df_map['age'] <= age_range[1]) | df_map['age'].isna()) &
+                (df_map['outcome'].isin(outcomes)) &
+                (df_map['country_iso'].isin(countries))
+            ]
+
+            if filtered_df.empty:
+                return "No data available for the selected filters.", {'display': 'none'}
+
+            if len(filtered_df) < 10:
+                return "Insufficient data for meaningful analysis. Please broaden your filters.", {'display': 'none'}
+
+            # Generate insights
+            desc_table = get_desc_table(filtered_df)
+            insights = analysis_generator.generate_analysis(
+                df=desc_table,
+                analysis_type=analysis_type
+            )
+
+            if isinstance(insights, str) and insights.strip():
+                formatted_insights = generate_html_text(f"""
+### AI Analysis ({analysis_type.title()} Focus)
+
+{insights}
+
+*Note: These insights are AI-generated and should be verified against the data.*
+""")
+                return formatted_insights, {'display': 'none'}
+            else:
+                return "Error generating analysis. Please try again.", {'display': 'none'}
+
+        except Exception as e:
+            print(f"Error in analysis generation: {str(e)}")
+            return "Error generating analysis. Please try again.", {'display': 'none'}
+
 
     # End of callbacks
     return

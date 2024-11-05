@@ -3,8 +3,16 @@ import os
 import torch
 from huggingface_hub import snapshot_download
 from transformers import AutoModelForCausalLM, AutoTokenizer
+from dotenv import load_dotenv
+import pandas as pd
 
+# choose model
 MODEL_NAME = "meta-llama/Llama-3.2-1B-Instruct"
+
+# get huggingface token to access model
+load_dotenv()
+HUGGINGFACEHUB_API_TOKEN = os.getenv("HUGGINGFACEHUB_API_TOKEN")
+
 
 class CustomHFModel:
     def __init__(self, model, tokenizer, device=None, **kwargs):
@@ -81,7 +89,8 @@ class AnalysisGenerator:
                 snapshot_download(
                     repo_id=self.model_name,
                     local_dir=self.model_dir,
-                    # ignore_patterns=["*.msgpack", "*.h5", "*.safetensors"]  # Ignore unnecessary files
+                    token=HUGGINGFACEHUB_API_TOKEN,
+                    ignore_patterns=["original/*"]  # Ignore unnecessary files
                 )
                 print("Model downloaded successfully.")
             except Exception as e:
@@ -143,3 +152,8 @@ class AnalysisGenerator:
             print(f"Error generating analysis: {str(e)}")
             return f"Error generating analysis: {str(e)}"
 
+
+if __name__ == "__main__":
+    ag = AnalysisGenerator()
+    insights = ag.generate_analysis(df=pd.DataFrame())
+    print(insights)

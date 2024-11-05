@@ -4,7 +4,6 @@ import torch
 from huggingface_hub import snapshot_download
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from dotenv import load_dotenv
-import pandas as pd
 
 # choose model
 MODEL_NAME = "meta-llama/Llama-3.2-1B-Instruct"
@@ -151,9 +150,3 @@ class AnalysisGenerator:
         except Exception as e:
             print(f"Error generating analysis: {str(e)}")
             return f"Error generating analysis: {str(e)}"
-
-
-if __name__ == "__main__":
-    ag = AnalysisGenerator()
-    insights = ag.generate_analysis(df=pd.DataFrame())
-    print(insights)

@@ -14,3 +14,6 @@ This fork adds some exploratory AI features to Vertex's existing capabilities. I
   * Ensure you have a HF User access token set up: https://huggingface.co/settings/tokens
   * Once this is done, create a `.env` file at the top level of the repository, with the token specified as follows: `HUGGINGFACEHUB_API_TOKEN="your_token_here"`
 * Then run the `descriptive_dashboard.py` file, and navigate to the "Clinical Presentation: Demographics / Comorbidities" panel to test out the new AI insights feature.
+
+## Requirements ##
+python3.10.15

@@ -1,12 +1,12 @@
+import json
 import dash
-from dash import html
+from dash import html, MATCH
 import dash_bootstrap_components as dbc
 from dash.dependencies import Input, Output, State
-import numpy as np
-import pandas as pd
 import pycountry
 import IsaricDraw as idw
 import IsaricAnalytics as ia
+import IsaricGenAI as iga
 import getREDCapData as getRC
 import redcap_config as rc_config
 
@@ -60,6 +60,30 @@ sections = [
     # 'withd',  # Withdrawal
 ]
 
+def create_visual_with_metadata(visual):
+    """
+    Create a container for a visual with AI description button and preserve metadata
+    """
+    graph, label, about = visual
+
+    container = html.Div([
+        graph,
+        html.Div([
+            dbc.Button("Get AI Description", id={'type': 'ai-button', 'index': graph.id}, className="mt-2"),
+            dbc.Collapse(
+                dbc.Card(dbc.CardBody(id={'type': 'ai-description', 'index': graph.id})),
+                id={'type': 'ai-collapse', 'index': graph.id},
+                is_open=False
+            )
+        ])
+    ])
+
+    return {
+        'container': container,
+        'graph': graph,
+        'label': label,
+        'about': about
+    }
 
 def create_visuals(df_map):
     '''
@@ -97,7 +121,11 @@ def create_visuals(df_map):
         graph_id='table_' + suffix,
         graph_label='Descriptive Table',
         graph_about='Summary of signs and symptoms at admission, and vitals and labs on day 0.')
-
+    
+    table_data = create_visual_with_metadata(
+        fig_table
+    )
+    
     inclu_columns = [
         col for col in df_map.columns if col.split('___')[0] in binary_var]
     inclu_columns = [col for col in inclu_columns if 'addi' not in col]
@@ -110,14 +138,24 @@ def create_visuals(df_map):
         graph_id='freq_' + suffix,
         graph_label='Signs and symptoms: Frequency',
         graph_about='Frequency of the ten most common signs and symptoms on presentation')
+    
+    freq_data = create_visual_with_metadata(
+        freq_chart
+    )
+    
     upset_plot = idw.fig_upset(
         set_data, dictionary=dd,
         title='Frequency of combinations of the five most common signs and symptoms',
         graph_id='upset_' + suffix,
         graph_label='Signs and symptoms: Intersections',
         graph_about='Frequency of combinations of the five most common signs and symptoms on presentation')
+    
+    upset_data = create_visual_with_metadata(
+        upset_plot
+    )
+    
 
-    return fig_table, freq_chart, upset_plot
+    return [table_data, freq_data, upset_data]
 
 
 ############################################
@@ -172,7 +210,7 @@ instructions_str = '''
 # This text appears after clicking the insight panel's About button
 about_list = [
     '<strong>' + label + '</strong>' + about
-    for _, label, about in create_visuals(df_map)]
+    for _, _, label, about in create_visuals(df_map)]
 about_str = '\n'.join(
     ['Information about each visual in the insight panel:'] + about_list)
 
@@ -219,9 +257,9 @@ def create_modal():
                     children=[
                         dbc.Tabs([
                             dbc.Tab(dbc.Row([
-                                dbc.Col(visual, id='col-'+visual.id)
-                                ]), label=label)
-                            for visual, label, _ in visuals])
+                                dbc.Col(data['container'], id='col-'+data['graph'].id)
+                                ]), label=data['label'])
+                            for data in visuals])
                     ]
                 )
             ])
@@ -234,7 +272,6 @@ def create_modal():
             generate_html_text(about_str))
     ]
     return modal
-
 
 ############################################
 ############################################
@@ -327,15 +364,15 @@ def register_callbacks(app, suffix):
         return output
 
     @app.callback(
-        [Output('col-' + visual.id, 'children')
-            for visual, _, _ in create_visuals(df_map)],
+        [Output('col-' + data['graph'].id, 'children')
+            for data in create_visuals(df_map)],
         [Input(f'submit-button_{suffix}', 'n_clicks')],
         [State(f'gender-checkboxes_{suffix}', 'value'),
          State(f'age-slider_{suffix}', 'value'),
          State(f'outcome-checkboxes_{suffix}', 'value'),
          State(f'country-checkboxes_{suffix}', 'value')]
     )
-    def update_figures(click, genders, age_range, outcomes, countries):
+    def update_graphs(click, genders, age_range, outcomes, countries):
         filtered_df = df_map[(
             (df_map['slider_sex'].isin(genders)) &
             ((df_map['age'] >= age_range[0]) | df_map['age'].isna()) &
@@ -344,10 +381,39 @@ def register_callbacks(app, suffix):
             (df_map['country_iso'].isin(countries)))]
 
         if filtered_df.empty:
-            visuals = None
+            return [None] * len(create_visuals(df_map))
         else:
-            visuals = [visual for visual, _, _ in create_visuals(filtered_df)]
-        return visuals
+            return [data['container'] for data in create_visuals(filtered_df)]
+
+    # callback for AI description buttons
+    @app.callback(
+        [Output({'type': 'ai-collapse', 'index': MATCH}, 'is_open'),
+         Output({'type': 'ai-description', 'index': MATCH}, 'children')],
+        Input({'type': 'ai-button', 'index': MATCH}, 'n_clicks'),
+        [State({'type': 'ai-collapse', 'index': MATCH}, 'is_open'),
+         State({'type': 'ai-description', 'index': MATCH}, 'children')]
+    )
+    def toggle_ai_description(n_clicks, is_open, current_description):
+        if not n_clicks:
+            return False, ""
+        
+        if is_open and current_description:
+            return False, current_description
+        
+        # Get the figure based on the button clicked
+        ctx = dash.callback_context
+        button_id = ctx.triggered[0]['prop_id']
+        
+        # Get corresponding figure from visuals
+        triggered_id = json.loads(button_id.split('.')[0])['index']
+        
+        for data in create_visuals(df_map):
+            if data['graph'].id == triggered_id:
+                figure = data['graph'].figure
+                description = iga.generate_viz_description(figure)
+                return True, description
+        
+        return True, "Could not generate description."
 
     # End of callbacks
     return
